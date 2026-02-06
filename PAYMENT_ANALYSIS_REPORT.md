@@ -68,6 +68,22 @@ This section specifically addresses scenarios that could lead to direct financia
 *   **Attack Vector**: By forcing error conditions (e.g., resource exhaustion), an attacker can trigger the "AutoByPass" logic.
 *   **Impact**: Accessing paid verification features or bypass security locks without payment.
 
+## Unlimited Beans/Currency Hack Assessment
+
+This section investigates potential mechanisms for the unlimited accumulation of internal currency ("Beans") without proper payment or authorization.
+
+### Scenario E: Task Reward Replay Attacks
+*   **Evidence**: `LWChat_LiveTaskBean(restBonus=` and `LWChat_LoginTriggerDailyInfoBean(rewardList=`.
+*   **Analysis**: These beans indicate that reward logic (e.g., daily login, live tasks) is structured with data objects that may be passed between client and server.
+*   **Vulnerability**: **Replay Attack**. If the server does not enforce a strict "one-time-use" policy (idempotency) on the `GrantToken` or reward claim request ID, an attacker can capture the HTTP request that claims a "Daily Login Reward" or "Task Completion Bonus" and replay it thousands of times.
+*   **Outcome**: The user accumulates unlimited beans by claiming the same reward repeatedly.
+
+### Scenario F: Client-Side "RestBonus" Manipulation
+*   **Evidence**: `LWChat_LiveTaskBean` has a field `restBonus`.
+*   **Analysis**: The name `restBonus` suggests the "remaining bonus" or "pending bonus" might be tracked in this object.
+*   **Vulnerability**: If the client calculates the `restBonus` (e.g., "User has completed 5/5 tasks, restBonus = 100 beans") and sends this value to the server to trigger the payout, an attacker can modify `restBonus` to `999999`.
+*   **Outcome**: The server credits the user with the manipulated bonus amount.
+
 ## Recommendations for Remediation
 
 1.  **Server-Side Validation**: Ensure all Google Play receipts (`LWChat_GoogleCheckAo`) are validated strictly against the Google Play Developer API on the server. Never trust the client's assertion of validity.
@@ -76,6 +92,9 @@ This section specifically addresses scenarios that could lead to direct financia
 4.  **Enable Encryption**: Re-enable payload encryption in the server configuration for `libliteavsdk` if it carries sensitive data.
 5.  **Obfuscation**: Use stronger obfuscation (e.g., ProGuard/R8 with more aggressive rules) to hide sensitive class names like `LWChat_PayServiceImp` and `LWChat_GoogleCheckAo`.
 6.  **Price Authority**: Ensure that `LinkPriceBean` is treated as **Read-Only** by the client. The server should never read the price *from* the client. The client should request a service ("Call User A"), and the server should look up the price from its own database.
+7.  **Idempotency & Server Authority for Rewards**:
+    *   Do not accept `restBonus` or reward amounts from the client. The client should only send a "TaskCompleted" signal (or better, the server tracks task completion independently).
+    *   Implement strict idempotency keys for all reward claim endpoints to prevent Replay Attacks.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to replicate this analysis on future builds.
