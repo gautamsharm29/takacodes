@@ -114,6 +114,22 @@ This section consolidates all findings where "Beans" (internal currency) are pot
     *   **Overflow**: Send a massive number to trigger an integer overflow if the server uses 32-bit signed integers for intermediate calculations.
     *   **Negative Value**: Attempt to convert `-100` beans. If the logic is `beans -= amount; coins += amount * rate`, then `beans` increases by 100, and `coins` decreases. If coins are allowed to go negative (or checked lazily), the user gains infinite beans.
 
+## Coin Security & Unlimited Accumulation Risks
+
+This section assesses the specific vulnerabilities in the "Game Coin" system (`ExchangeGameCoinsBean`) and "First Recharge" logic.
+
+### 1. Coin Exchange Vulnerabilities
+*   **Artifact**: `ExchangeGameCoinsBean` and `LwchatExchangeGameCoinsItemBinding`.
+*   **Vulnerability**: Similar to the Bean Exchange, this flow handles the conversion of internal currency (likely Beans -> Coins or vice versa).
+*   **Risk - Rate Manipulation**: If the exchange rate is fetched by the client (e.g., `LWChat_BeanConvertCoinConfigBean`) and then sent back in the `ExchangeGameCoinsBean` request, an attacker can modify the rate to get 1000 Coins for 1 Bean.
+*   **Risk - ID Tampering**: The field `ExchangeGameCoinsBean(id=` suggests the exchange is based on a specific "Pack ID". If the server does not validate that the `id` corresponds to a valid, active exchange pack, or if it allows the client to invent new IDs, attackers might trigger debug/test packs with high payouts.
+
+### 2. First Recharge Fraud
+*   **Artifact**: `LWChat_FirstRechargeCheckAo` and `LWChat_FirstRechargeBean(awardList=`.
+*   **Analysis**: "First Recharge" is a classic bonus system. The presence of `FirstRechargeCheckAo` suggests the client *asks* "Is this my first recharge?".
+*   **Vulnerability - Eligibility Reset**: An attacker can manipulate the response to `FirstRechargeCheckAo` (or the request, if it contains an eligibility flag) to make the server believe *every* recharge is the "First Recharge".
+*   **Impact**: The user repeatedly claims the "First Recharge Bonus" (usually high value) for every small transaction, accumulating unlimited coins/bonuses cheaply.
+
 ## Face Verification & Liveness Detection Analysis
 
 This section analyzes the biometric security components found in the application.
@@ -165,6 +181,10 @@ This section analyzes the biometric security components found in the application
     *   **Backend Verification**: Do not trust `LWChat_FaceKycAuthAo` alone. The client SDK should generate a signed blob (token) that is sent to the server, and the server must verify this token with the provider (Tencent/Sensetime) directly.
     *   **Disable Debug**: Ensure `st_mobile_enable_debug_mode` is stripped or non-functional in production.
     *   **Multi-Face Check**: Consider enabling `need_check_multiface` to prevent attacks where a photo is held up in front of a real face.
+10. **Coin Exchange Security**:
+    *   **Validation**: Server must validate `ExchangeGameCoinsBean.id` maps to a real, valid config.
+    *   **Server-Side Rates**: Do not respect any rate/conversion factor sent by the client.
+    *   **One-Time Checks**: For "First Recharge", the server must check its own database for previous transactions, ignoring any `CheckAo` sent by the client.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to replicate this analysis on future builds.
