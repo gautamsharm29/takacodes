@@ -15,6 +15,7 @@ The following table summarizes the identified vulnerabilities that can lead to d
 | **Currency Inflation** | **Gift Count Manipulation** | `LWChat_SendGiftAo` | Users generate currency by sending negative quantities of gifts. | **Critical** |
 | **Fraudulent Payout** | **Wage/Activity Fraud** | `LWChat_HourlyWageInfoBean` | Platform pays wages for fake/simulated activity hours. | **High** |
 | **Fraudulent Payout** | **Coin Exchange Rates** | `ExchangeGameCoinsBean` | Users manipulate rates to drain platform reserves. | **High** |
+| **Bonus Abuse** | **Referral Fraud** | `LWChat_InviteBean` | Users create fake accounts to farm invite bonuses. | **Medium** |
 
 ## Detailed Vulnerability Analysis
 
@@ -49,12 +50,31 @@ The following table summarizes the identified vulnerabilities that can lead to d
     *   **Client Trust**: If the server trusts the `FaceKycAuthAo` object without a cryptographic proof (signed token) from the SDK provider, the check is skipped entirely.
 *   **Financial Threat**: Fraudsters can verify fake accounts to abuse "New User Bonuses", "Cash Out" restrictions, or commit credit card fraud using stolen identities.
 
+## Referral System Security Assessment
+
+This section analyzes the "Invite" and "Referral" mechanisms for potential abuse.
+
+### 1. Self-Referral Bypasses
+*   **Artifacts**: String `str_you_can_not_invite_your_self`.
+*   **Analysis**: The existence of this string implies the **Client** performs the check to prevent a user from entering their own referral code.
+*   **The Flaw**: If this check is *only* on the client, an attacker can simply modify the request (or the app) to bypass it. They can create a new account and bind their *own* main account's code, farming rewards for themselves.
+
+### 2. Device ID Spoofing (Infinite Invites)
+*   **Artifacts**: `checkDeviceIds` method found in DEX.
+*   **Analysis**: Referral systems often limit "One Invite per Device" to prevent farming.
+*   **The Flaw**: Device IDs (IMEI, Android ID, Mac Address) are easily spoofed on rooted devices or emulators. If the server trusts the client-reported Device ID, an attacker can generate thousands of unique IDs, create thousands of fake accounts, and farm "New User Invite Bonuses" repeatedly.
+
+### 3. Reward Claim Replay
+*   **Artifacts**: `LWChat_InviteBean`.
+*   **The Flaw**: If the endpoint to claim the referral reward is not idempotent, an attacker might capture a valid "Invite Success" request and replay it multiple times to claim the reward x100 for a single invite.
+
 ## Recommendations for Remediation
 
 1.  **Enforce Server-Side Authority**:
     *   **Prices**: The server must look up prices from its own database based on the SKU/Service ID. Ignore client-sent price fields.
     *   **Verification**: Validate all receipts directly with Google/Apple APIs.
     *   **Wages**: Calculate wages based on server-side connection logs, not client reports.
+    *   **Referrals**: Perform "Self-Referral" checks on the server. Do not trust the client to validate relationships.
 
 2.  **Strict Input Sanitation**:
     *   **Positive Integers**: Reject any transaction request where `amount`, `price`, or `count` is <= 0.
@@ -65,6 +85,10 @@ The following table summarizes the identified vulnerabilities that can lead to d
     *   **Encrypt Data**: Enable encryption in `TxyHyYtSDKSettings.json` to prevent MitM attacks on verification data.
 
 4.  **Idempotency**: Implement unique request IDs to prevent the replay of reward claims and purchase verifications.
+
+5.  **Referral Fraud Prevention**:
+    *   **Device Fingerprinting**: Use robust, server-side device fingerprinting (beyond simple IMEI) to detect farming farms.
+    *   **Activity Thresholds**: Only grant referral rewards after the new user reaches a certain activity level (e.g., Level 5 or first purchase) to make farming inefficient.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to perform static analysis on future builds to detect these patterns.
