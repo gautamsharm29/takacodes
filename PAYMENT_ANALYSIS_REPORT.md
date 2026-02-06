@@ -89,21 +89,28 @@ This section specifically addresses scenarios that could lead to direct financia
 *   **Attack Vector**: By forcing error conditions (e.g., resource exhaustion), an attacker can trigger the "AutoByPass" logic.
 *   **Impact**: Accessing paid verification features or bypass security locks without payment.
 
-## Unlimited Beans/Currency Hack Assessment
+## Beans: Client-Side Trust Vectors
 
-This section investigates potential mechanisms for the unlimited accumulation of internal currency ("Beans") without proper payment or authorization.
+This section consolidates all findings where "Beans" (internal currency) are potentially manipulated via client-side requests.
 
-### Scenario E: Task Reward Replay Attacks
-*   **Evidence**: `LWChat_LiveTaskBean(restBonus=` and `LWChat_LoginTriggerDailyInfoBean(rewardList=`.
-*   **Analysis**: These beans indicate that reward logic (e.g., daily login, live tasks) is structured with data objects that may be passed between client and server.
-*   **Vulnerability**: **Replay Attack**. If the server does not enforce a strict "one-time-use" policy (idempotency) on the `GrantToken` or reward claim request ID, an attacker can capture the HTTP request that claims a "Daily Login Reward" or "Task Completion Bonus" and replay it thousands of times.
-*   **Outcome**: The user accumulates unlimited beans by claiming the same reward repeatedly.
+### 1. Pay Message Amount (`LWChat_SendPayMessageBean`)
+*   **Artifact**: `LWChat_SendPayMessageBean` (found in `base/classes4.dex`).
+*   **String Evidence**: `LWChat_SendPayMessageBean(messageAmount=`
+*   **Analysis**: This class strongly implies that when a user sends a "Pay Message" (likely a paid DM or tip), the **amount** of the payment is encapsulated in the message bean itself, which is constructed on the client.
+*   **Exploit**: An attacker intercepts the "SendPayMessage" request and modifies `messageAmount` to `0` (free message) or `1` (nominal fee for premium service). If the server deducts whatever amount is in this field, the user pays effectively nothing for a paid service.
 
-### Scenario F: Client-Side "RestBonus" Manipulation
-*   **Evidence**: `LWChat_LiveTaskBean` has a field `restBonus`.
-*   **Analysis**: The name `restBonus` suggests the "remaining bonus" or "pending bonus" might be tracked in this object.
-*   **Vulnerability**: If the client calculates the `restBonus` (e.g., "User has completed 5/5 tasks, restBonus = 100 beans") and sends this value to the server to trigger the payout, an attacker can modify `restBonus` to `999999`.
-*   **Outcome**: The server credits the user with the manipulated bonus amount.
+### 2. Gift Sending (`LWChat_SendGiftAo`)
+*   **Artifact**: `LWChat_SendGiftAo` and `CpSendGiftAO`.
+*   **Analysis**: "Ao" stands for "Argument Object" (or Request Object). This object typically contains `giftId`, `receiverId`, and `count`.
+*   **Exploit**: While the server likely checks the price of `giftId`, if `count` is manipulated to a negative number (e.g., `-1`), and the server logic is simply `userBalance -= giftPrice * count`, the math becomes `userBalance -= giftPrice * (-1)` -> `userBalance += giftPrice`.
+*   **Impact**: **Unlimited Beans**. Sending a negative number of gifts credits the user's account instead of debiting it.
+
+### 3. Bean Conversion/Exchange (`ExchangeBeansBean`)
+*   **Artifact**: `ExchangeBeansBean(bean=` and `LWChat_BeanConvertCoinConfigBean`.
+*   **Analysis**: There is a feature to convert "Beans" to "Coins" (or vice versa). The request bean explicitly contains the `bean` amount to convert.
+*   **Exploit**:
+    *   **Overflow**: Send a massive number to trigger an integer overflow if the server uses 32-bit signed integers for intermediate calculations.
+    *   **Negative Value**: Attempt to convert `-100` beans. If the logic is `beans -= amount; coins += amount * rate`, then `beans` increases by 100, and `coins` decreases. If coins are allowed to go negative (or checked lazily), the user gains infinite beans.
 
 ## Recommendations for Remediation
 
@@ -116,7 +123,9 @@ This section investigates potential mechanisms for the unlimited accumulation of
 7.  **Idempotency & Server Authority for Rewards**:
     *   Do not accept `restBonus` or reward amounts from the client. The client should only send a "TaskCompleted" signal (or better, the server tracks task completion independently).
     *   Implement strict idempotency keys for all reward claim endpoints to prevent Replay Attacks.
-8.  **Strict Parameter Checking**: In `LWChat_ModifyAnchorLinkPriceAo` handlers, verify that the user ID in the request matches the authenticated user (prevent IDOR) and that the price is within a valid, safe range (prevent overflow/underflow).
+8.  **Strict Parameter Checking**:
+    *   **Positive Values Only**: Ensure all `count`, `amount`, and `price` fields in requests (like `LWChat_SendGiftAo`, `ExchangeBeansBean`) are strictly validated to be positive integers (>0).
+    *   **Price Lookup**: For `LWChat_SendPayMessageBean`, do not trust the `messageAmount` from the client. The server should determine the cost based on the message type or recipient's setting.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to replicate this analysis on future builds.
