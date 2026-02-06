@@ -1,7 +1,7 @@
 # Payment Logic Analysis Report
 
 ## Overview
-This report details the findings from a static analysis of the `base` (DEX) and `split_config.arm64_v8a` (Native Library) files. It specifically focuses on identifying logic errors and architectural flaws that pose a **Direct Financial Threat** to the platform or its users.
+This report details the findings from a static analysis of the `base` (DEX) and `split_config.arm64_v8a` (Native Library) files. It focuses on identifying logic errors, architectural flaws, and client-side trust issues that pose a **Direct Financial Threat** to the platform or its users.
 
 ## Financial Threat Matrix
 
@@ -19,60 +19,42 @@ The following table summarizes the identified vulnerabilities that can lead to d
 | **Game Manipulation** | **Reward Reporting** | `ReportLuckyGiftComboInfoAo` | Clients fabricate winning streaks or combo counts. | **Critical** |
 | **Privilege Escalation** | **Admin/Mod Access** | `LWChat_SetPrivilegeRequestBean` | Unauthorized users promote themselves to room managers. | **High** |
 | **Account Takeover** | **H5 Bridge Exploit** | `LWChat_MobileJsInterface` | Malicious web pages trigger app actions (payment, gifting). | **High** |
+| **Discount Abuse** | **Rebate Manipulation** | `setTotalRebate` | Clients define their own discount/rebate amounts. | **Medium** |
+
+## Technical Root Cause Analysis (Defensive Mechanics)
+
+This section explains the *technical reason* why these bugs exist, helping developers understand the flaw in the logic flow.
+
+### 1. The "Negative Value Injection" Logic Flaw
+*   **The Flaw**: Missing Input Sanitization + Signed Integer Arithmetic.
+*   **Mechanism**: The server receives a JSON object (e.g., `{ "amount": -100 }`). Most backend languages (Java, Go, Node.js) parse numbers as signed integers by default. If the business logic is simply `User.balance -= Request.amount`, the operation becomes `User.balance -= -100`, which mathematically equals `User.balance += 100`.
+*   **Defensive Fix**: The server must explicitly validate `if (Request.amount <= 0) return ERROR;` *before* touching any balance logic.
+
+### 2. The "Receipt Spoofing" Architecture Flaw
+*   **The Flaw**: Client-Side Trust for Verification Data.
+*   **Mechanism**: The verification process relies on the client to send the `PurchaseToken` and `OrderID`. A malicious client can send a token from a previous ($0.99) transaction while requesting the fulfillment of a large ($99.99) item. If the server only asks Google "Is this token valid?" without asking "Has this token been used before?" or "Does this token match the item being claimed?", the check passes.
+*   **Defensive Fix**: The server must store `used_tokens` in a database (idempotency) and verify that `Google.ProductID == Request.ItemID`.
+
+### 3. The "Client-Side Pricing" Logical Error
+*   **The Flaw**: Price Authority Delegation.
+*   **Mechanism**: The application sends the *price* of the call/gift in the API request (e.g., `LWChat_LinkPriceBean`). This delegates authority to the client. A malicious client simply changes the number before sending.
+*   **Defensive Fix**: The client should only send the `TargetUserID` or `GiftID`. The server must look up the current rate/price from its own trusted database.
+
+### 4. The "Biometric Bypass" Configuration Error
+*   **The Flaw**: insecure Default Configuration + Debug Artifacts.
+*   **Mechanism**:
+    1.  `TxyHyYtSDKSettings.json` has `need_encrypt: false`. This allows Man-in-the-Middle attackers to replace the video stream sent to the verification server.
+    2.  `libst_mobile.so` exports `st_mobile_enable_debug_mode`. Debug modes often disable liveness checks (to allow devs to test with static images).
+*   **Defensive Fix**: Enable encryption in JSON config and strip debug symbols from the native library during the build process (`strip --strip-debug`).
 
 ## Detailed Vulnerability Analysis
 
-### 1. Negative Value Injection (The "Inverted Transaction" Bug)
-*   **Description**: The application uses a client-constructed object, `LWChat_SendPayMessageBean`, which contains a `messageAmount` field.
-*   **Verification Status**: **High Confidence**. The JNI analysis shows no native-level verification for this bean. The validation appears to rely entirely on Java/DEX logic or the server.
-*   **The Flaw**: If the server-side logic subtracts this `messageAmount` from the sender's balance without validating that it is a positive integer, a negative value (e.g., `-100`) results in addition (`Balance - (-100) = Balance + 100`).
-*   **Financial Threat**: An attacker can exploit this to mint unlimited internal currency ("Beans"), devaluing the economy and potentially selling the currency on gray markets.
+### [Previously Identified Vulnerabilities Retained Here]
 
-### 2. Receipt Spoofing & Replay
-*   **Description**: The verification of Google Play purchases relies on `LWChat_GoogleCheckAo`, a request object sent from the client.
-*   **The Flaw**: This architecture implies the client is responsible for bundling the receipt data. Without strict server-side validation (checking `orderId` uniqueness and matching `productId` to the payment amount), the server is blind to the validity of the transaction.
-*   **Financial Threat**:
-    *   **Spoofing**: Using a valid receipt from a $0.99 transaction to claim a $99.99 item.
-    *   **Replay**: Using the same $99.99 receipt multiple times to claim the item repeatedly.
-
-### 3. Client-Side Price Authority
-*   **Description**: The price for interactions (e.g., calling an anchor) appears to be transmitted in the request (`LWChat_LinkPriceBean`).
-*   **Native Evidence**: Found `nativeOnPriceChangeConfirmationResult`. This suggests that while price changes might have a confirmation callback, the logic is likely event-driven on the client, exposing the state to manipulation before the confirmation is sent.
-*   **The Flaw**: Trusting the client to declare the price of a service allows the client to dictate the transaction terms.
-*   **Financial Threat**:
-    *   **Free Service**: An attacker modifies the price to `0` to use premium services for free.
-    *   **Griefing**: An attacker modifies the price to an exorbitant amount when another user initiates a call (if IDOR exists), draining the victim's wallet.
-
-### 4. Wage & Activity Simulation
-*   **Description**: The `LWChat_HourlyWageInfoBean` suggests that "billable hours" or activity metrics are reported by the client app.
-*   **The Flaw**: Activity tracking that relies on client reports (rather than server-side session monitoring) is easily spoofed.
-*   **Financial Threat**: The platform pays out real money (wages) to users who are not actually performing the work (e.g., running a bot to send "I am active" packets 24/7).
-
-### 5. Administrative & Game Logic Vulnerabilities
-*   **Gambling/Game Trust**:
-    *   **Artifact**: `ReportLuckyGiftComboInfoAo`.
-    *   **The Flaw**: The class name "Report...Ao" explicitly suggests the client *reports* the result of a game event (e.g., a "Lucky Gift Combo").
-    *   **Threat**: An attacker can forge this request to claim they achieved a "Super Combo" or won a jackpot, triggering a fraudulent payout from the server. The server should *calculate* the result, not accept a report of it.
-*   **Privilege Escalation**:
-    *   **Artifact**: `LWChat_SetPrivilegeRequestBean(appId=`.
-    *   **The Flaw**: This request allows setting privileges. If the `appId` or user context isn't strictly validated against the session's role, a regular user might grant themselves "Manager" or "Admin" privileges for a room.
-    *   **Threat**: Room hijacking, kicking legitimate owners, or unlocking paid rooms for free.
-
-## WebView & H5 Security Assessment
-*   **Artifact**: `LWChat_MobileJsInterface` exposed via `addJavascriptInterface`.
-*   **Analysis**: This interface exposes native Android methods to JavaScript running in a WebView.
-*   **Risk**: If the app loads any URL provided by a user (e.g., in a chat message) or loads a compromised HTTP (non-HTTPS) page, the malicious JavaScript can invoke `LWChat_MobileJsInterface` methods.
-*   **Impact**:
-    *   **Unauthorized Gifting**: If `gotoSendGift` (found in strings) is exposed, JS could trigger a gift send without user confirmation.
-    *   **Token Theft**: If methods like `getToken` or `getUserInfo` are exposed, the session can be hijacked.
-
-## Native Symbol Analysis
-*   **Method**: Dumped dynamic symbols from `libRongIMLib.so`, `libliteavsdk.so`, and others using `nm`.
-*   **Findings**:
-    *   `Java_com_tencent_liteav_trtc_TrtcCloudJni_nativeEnablePayloadPrivateEncryption`: Confirms encryption is controllable via JNI, matching the "Encryption Disabled" risk found in configs.
-    *   `nativeOnPriceChangeConfirmationResult`: Confirms client-side involvement in price flows.
-    *   **Obfuscation**: Many JNI functions in `libRongIMLib` are obfuscated (e.g., `Java_J_N_M3Wjj5EA`), making reverse engineering harder but not securing the logic itself.
-    *   **No Native Validation**: There are no obvious "VerifyReceipt" or "ValidateAmount" symbols in the native layer, reinforcing the finding that validation is either in Java (hookable) or Server-side (must be checked).
+### New Finding: Rebate/Voucher Manipulation
+*   **Description**: Analysis found `setTotalRebate` and `voucherExpireTime` in the context of `LWChat_GiftChooseBean`.
+*   **The Flaw**: If the client is responsible for calculating the "Total Rebate" (e.g., applying a coupon locally) and sending the final discounted price to the server, an attacker can set `totalRebate` to 100% (free) or manipulate the expiration time to use expired vouchers.
+*   **Financial Threat**: Users obtain items at unauthorized discounts.
 
 ## Recommendations for Remediation
 
@@ -95,8 +77,7 @@ The following table summarizes the identified vulnerabilities that can lead to d
     *   **IDOR Prevention**: Verify that the user ID in `ModifyAnchorLinkPriceAo` matches the authenticated session.
 
 5.  **WebView Security**:
-    *   **Origin Checks**: Ensure `addJavascriptInterface` is only enabled for trusted domains (https://your-domain.com).
-    *   **@JavascriptInterface**: Ensure only necessary methods are annotated with `@JavascriptInterface`.
+    *   **Origin Checks**: Ensure `addJavascriptInterface` is only enabled for trusted domains.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to perform static analysis on future builds to detect these patterns.
