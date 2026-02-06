@@ -18,6 +18,7 @@ The following table summarizes the identified vulnerabilities that can lead to d
 | **Bonus Abuse** | **Referral Fraud** | `LWChat_InviteBean` | Users create fake accounts to farm invite bonuses. | **Medium** |
 | **Game Manipulation** | **Reward Reporting** | `ReportLuckyGiftComboInfoAo` | Clients fabricate winning streaks or combo counts. | **Critical** |
 | **Privilege Escalation** | **Admin/Mod Access** | `LWChat_SetPrivilegeRequestBean` | Unauthorized users promote themselves to room managers. | **High** |
+| **Account Takeover** | **H5 Bridge Exploit** | `LWChat_MobileJsInterface` | Malicious web pages trigger app actions (payment, gifting). | **High** |
 
 ## Detailed Vulnerability Analysis
 
@@ -57,6 +58,14 @@ The following table summarizes the identified vulnerabilities that can lead to d
     *   **The Flaw**: This request allows setting privileges. If the `appId` or user context isn't strictly validated against the session's role, a regular user might grant themselves "Manager" or "Admin" privileges for a room.
     *   **Threat**: Room hijacking, kicking legitimate owners, or unlocking paid rooms for free.
 
+## WebView & H5 Security Assessment
+*   **Artifact**: `LWChat_MobileJsInterface` exposed via `addJavascriptInterface`.
+*   **Analysis**: This interface exposes native Android methods to JavaScript running in a WebView.
+*   **Risk**: If the app loads any URL provided by a user (e.g., in a chat message) or loads a compromised HTTP (non-HTTPS) page, the malicious JavaScript can invoke `LWChat_MobileJsInterface` methods.
+*   **Impact**:
+    *   **Unauthorized Gifting**: If `gotoSendGift` (found in strings) is exposed, JS could trigger a gift send without user confirmation.
+    *   **Token Theft**: If methods like `getToken` or `getUserInfo` are exposed, the session can be hijacked.
+
 ## Native Symbol Analysis
 *   **Method**: Dumped dynamic symbols from `libRongIMLib.so`, `libliteavsdk.so`, and others using `nm`.
 *   **Findings**:
@@ -84,6 +93,10 @@ The following table summarizes the identified vulnerabilities that can lead to d
 4.  **Access Control**:
     *   **Privilege Checks**: Ensure `SetPrivilegeRequest` checks the *requester's* permission level on the server before applying changes.
     *   **IDOR Prevention**: Verify that the user ID in `ModifyAnchorLinkPriceAo` matches the authenticated session.
+
+5.  **WebView Security**:
+    *   **Origin Checks**: Ensure `addJavascriptInterface` is only enabled for trusted domains (https://your-domain.com).
+    *   **@JavascriptInterface**: Ensure only necessary methods are annotated with `@JavascriptInterface`.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to perform static analysis on future builds to detect these patterns.
