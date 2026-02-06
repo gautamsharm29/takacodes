@@ -21,6 +21,7 @@ The following table summarizes the identified vulnerabilities that can lead to d
 
 ### 1. Negative Value Injection (The "Inverted Transaction" Bug)
 *   **Description**: The application uses a client-constructed object, `LWChat_SendPayMessageBean`, which contains a `messageAmount` field.
+*   **Verification Status**: **High Confidence**. The JNI analysis shows no native-level verification for this bean (`libRongIMLib.so` symbols are mostly obfuscated or standard IM logic). The validation appears to rely entirely on Java/DEX logic or the server.
 *   **The Flaw**: If the server-side logic subtracts this `messageAmount` from the sender's balance without validating that it is a positive integer, a negative value (e.g., `-100`) results in addition (`Balance - (-100) = Balance + 100`).
 *   **Financial Threat**: An attacker can exploit this to mint unlimited internal currency ("Beans"), devaluing the economy and potentially selling the currency on gray markets.
 
@@ -33,6 +34,7 @@ The following table summarizes the identified vulnerabilities that can lead to d
 
 ### 3. Client-Side Price Authority
 *   **Description**: The price for interactions (e.g., calling an anchor) appears to be transmitted in the request (`LWChat_LinkPriceBean`).
+*   **Native Evidence**: Found `nativeOnPriceChangeConfirmationResult`. This suggests that while price changes might have a confirmation callback, the logic is likely event-driven on the client, exposing the state to manipulation before the confirmation is sent.
 *   **The Flaw**: Trusting the client to declare the price of a service allows the client to dictate the transaction terms.
 *   **Financial Threat**:
     *   **Free Service**: An attacker modifies the price to `0` to use premium services for free.
@@ -50,23 +52,13 @@ The following table summarizes the identified vulnerabilities that can lead to d
     *   **Client Trust**: If the server trusts the `FaceKycAuthAo` object without a cryptographic proof (signed token) from the SDK provider, the check is skipped entirely.
 *   **Financial Threat**: Fraudsters can verify fake accounts to abuse "New User Bonuses", "Cash Out" restrictions, or commit credit card fraud using stolen identities.
 
-## Referral System Security Assessment
-
-This section analyzes the "Invite" and "Referral" mechanisms for potential abuse.
-
-### 1. Self-Referral Bypasses
-*   **Artifacts**: String `str_you_can_not_invite_your_self`.
-*   **Analysis**: The existence of this string implies the **Client** performs the check to prevent a user from entering their own referral code.
-*   **The Flaw**: If this check is *only* on the client, an attacker can simply modify the request (or the app) to bypass it. They can create a new account and bind their *own* main account's code, farming rewards for themselves.
-
-### 2. Device ID Spoofing (Infinite Invites)
-*   **Artifacts**: `checkDeviceIds` method found in DEX.
-*   **Analysis**: Referral systems often limit "One Invite per Device" to prevent farming.
-*   **The Flaw**: Device IDs (IMEI, Android ID, Mac Address) are easily spoofed on rooted devices or emulators. If the server trusts the client-reported Device ID, an attacker can generate thousands of unique IDs, create thousands of fake accounts, and farm "New User Invite Bonuses" repeatedly.
-
-### 3. Reward Claim Replay
-*   **Artifacts**: `LWChat_InviteBean`.
-*   **The Flaw**: If the endpoint to claim the referral reward is not idempotent, an attacker might capture a valid "Invite Success" request and replay it multiple times to claim the reward x100 for a single invite.
+## Native Symbol Analysis
+*   **Method**: Dumped dynamic symbols from `libRongIMLib.so`, `libliteavsdk.so`, and others using `nm`.
+*   **Findings**:
+    *   `Java_com_tencent_liteav_trtc_TrtcCloudJni_nativeEnablePayloadPrivateEncryption`: Confirms encryption is controllable via JNI, matching the "Encryption Disabled" risk found in configs.
+    *   `nativeOnPriceChangeConfirmationResult`: Confirms client-side involvement in price flows.
+    *   **Obfuscation**: Many JNI functions in `libRongIMLib` are obfuscated (e.g., `Java_J_N_M3Wjj5EA`), making reverse engineering harder but not securing the logic itself.
+    *   **No Native Validation**: There are no obvious "VerifyReceipt" or "ValidateAmount" symbols in the native layer, reinforcing the finding that validation is either in Java (hookable) or Server-side (must be checked).
 
 ## Recommendations for Remediation
 
