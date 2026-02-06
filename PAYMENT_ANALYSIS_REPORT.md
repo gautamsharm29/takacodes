@@ -97,7 +97,9 @@ This section consolidates all findings where "Beans" (internal currency) are pot
 *   **Artifact**: `LWChat_SendPayMessageBean` (found in `base/classes4.dex`).
 *   **String Evidence**: `LWChat_SendPayMessageBean(messageAmount=`
 *   **Analysis**: This class strongly implies that when a user sends a "Pay Message" (likely a paid DM or tip), the **amount** of the payment is encapsulated in the message bean itself, which is constructed on the client.
-*   **Exploit**: An attacker intercepts the "SendPayMessage" request and modifies `messageAmount` to `0` (free message) or `1` (nominal fee for premium service). If the server deducts whatever amount is in this field, the user pays effectively nothing for a paid service.
+*   **Exploit (Negative Value)**: An attacker intercepts the "SendPayMessage" request and modifies `messageAmount` to a negative number (e.g., `-100`).
+    *   **Logic**: If the server calculates `senderBalance = senderBalance - messageAmount`, the result is `senderBalance - (-100) = senderBalance + 100`.
+    *   **Outcome**: The attacker **gains** beans instead of spending them. The recipient might also "lose" beans depending on how the transfer is handled (`receiverBalance += messageAmount` => `receiverBalance - 100`), or the system might effectively mint new currency.
 
 ### 2. Gift Sending (`LWChat_SendGiftAo`)
 *   **Artifact**: `LWChat_SendGiftAo` and `CpSendGiftAO`.
@@ -111,6 +113,31 @@ This section consolidates all findings where "Beans" (internal currency) are pot
 *   **Exploit**:
     *   **Overflow**: Send a massive number to trigger an integer overflow if the server uses 32-bit signed integers for intermediate calculations.
     *   **Negative Value**: Attempt to convert `-100` beans. If the logic is `beans -= amount; coins += amount * rate`, then `beans` increases by 100, and `coins` decreases. If coins are allowed to go negative (or checked lazily), the user gains infinite beans.
+
+## Face Verification & Liveness Detection Analysis
+
+This section analyzes the biometric security components found in the application.
+
+### Identified Components
+*   **Vendors**: `STMobile` (Sensetime), `Megvii` (Face++), `HuiYan` (Tencent Cloud).
+*   **Libraries**: `libst_mobile.so`, `libmegface.so`.
+*   **Key Classes**: `LWChat_FaceKycAuthAo` (Request Object), `LWChat_NeedVerifyBeforeLiveBean`.
+
+### Vulnerabilities
+
+1.  **Debug Mode Left Enabled**:
+    *   **Evidence**: `libst_mobile.so` explicitly exports the symbol `st_mobile_enable_debug_mode`.
+    *   **Attack Vector**: An attacker using a rooted device or Frida can call this function. Debug modes often visualize the 3D mesh or landmarks, but more importantly, they sometimes **disable liveness checks** to facilitate testing with static images.
+    *   **Impact**: Bypassing liveness detection using a photo or video of the target.
+
+2.  **Client-Side "Auth Success" Signals**:
+    *   **Evidence**: Strings `albumVerifySuccess` and `avatarVerifySuccess` in DEX files.
+    *   **Attack Vector**: If the application relies on the client to report "Success" after the native library finishes its check, an attacker can simply hook the Java/Kotlin method that returns the result and force it to return `true`.
+    *   **Relevance**: `LWChat_FaceKycAuthAo` is likely the object sent to the server *after* the local SDK says "Yes". If the server doesn't receive a signed token from the native SDK (or a backend-to-backend verification from Tencent/Sensetime), but just trusts this "Auth Object", the verification is completely bypassable.
+
+3.  **Auto-Bypass Logic**:
+    *   **Evidence**: `kTapAiInferenceTooMuchErrorAutoByPass` (previously identified).
+    *   **Attack Vector**: Intentionally slowing down the device (CPU throttling) or feeding corrupt video frames to cause the inference engine to time out. If the policy is "AutoByPass" (Fail Open), the check is skipped.
 
 ## Recommendations for Remediation
 
@@ -126,6 +153,9 @@ This section consolidates all findings where "Beans" (internal currency) are pot
 8.  **Strict Parameter Checking**:
     *   **Positive Values Only**: Ensure all `count`, `amount`, and `price` fields in requests (like `LWChat_SendGiftAo`, `ExchangeBeansBean`) are strictly validated to be positive integers (>0).
     *   **Price Lookup**: For `LWChat_SendPayMessageBean`, do not trust the `messageAmount` from the client. The server should determine the cost based on the message type or recipient's setting.
+9.  **Secure Face Verification**:
+    *   **Backend Verification**: Do not trust `LWChat_FaceKycAuthAo` alone. The client SDK should generate a signed blob (token) that is sent to the server, and the server must verify this token with the provider (Tencent/Sensetime) directly.
+    *   **Disable Debug**: Ensure `st_mobile_enable_debug_mode` is stripped or non-functional in production.
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to replicate this analysis on future builds.
