@@ -44,6 +44,27 @@ A custom Python analysis tool (`analyze_payment.py`) was developed and deployed 
     *   `com/lwchatlw/lwchat/common/bean/LWChat_LinkPriceBean`
 *   **Risk**: The `LinkPriceBean` suggests the price for "links" (calls/interactions) might be handled on the client side (as a "Bean" usually implies a data object). If the client calculates the cost and sends it to the server, an attacker could modify the price to 0 or a negative number.
 
+## Client-Side Trust Verification (Re-verified)
+
+This section lists confirmed patterns where the client appears to hold authority over data that should be server-controlled.
+
+### Confirmed Risky Patterns
+
+1.  **Client-Side Price Setting**:
+    *   **Artifacts**: `LWChat_CallPriceDialog$setPriceLWChat$1`, `LWChat_ModifyAnchorLinkPriceAo`, `LWChat_AnchorSettingPriceDialog`.
+    *   **Logic**: The existence of `ModifyAnchorLinkPriceAo` (Argument Object) strongly confirms that the client sends a request to *modify* the price. While legitimate for an Anchor setting their own rates, if this endpoint is not strictly rate-limited and bounds-checked (e.g., ensuring price > 0), an attacker can set the price to `0` or a negative value.
+    *   **Risk**: An attacker (Anchor) could potentially set their price to `0` to farm popularity, or a negative value (if signed integers are used) to crash the system or corrupt data. Conversely, an attacker (User) calling the "set price" endpoint for *another user* (IDOR) could ruin their earnings.
+
+2.  **Client-Side "Bean" Updates**:
+    *   **Artifacts**: `updateBean`, `setBeans`, `LWChat_RoomInfoUpdateBean`.
+    *   **Logic**: Methods like `updateBean` and classes like `RoomInfoUpdateBean` suggest that room state (including bean counts or earnings) might be pushed from client to server (or at least, the client triggers the update).
+    *   **Risk**: If `updateBean` accepts an integer amount from the client, it is a direct path to unlimited currency.
+
+3.  **Debug/Test Configuration in Production**:
+    *   **Artifacts**: `LWChat_PayServiceImp`, `PayServiceImp`.
+    *   **Logic**: Implementation classes for payment services in the DEX often contain "test" branches or "mock" payment methods left over from development.
+    *   **Risk**: If `LWChat_PayServiceImp` contains a method like `mockPay` or checks for a specific "test user" ID to bypass payment, this can be exploited.
+
 ## Direct Money Loss Risk Assessment
 
 This section specifically addresses scenarios that could lead to direct financial loss for the platform or its users.
@@ -95,6 +116,7 @@ This section investigates potential mechanisms for the unlimited accumulation of
 7.  **Idempotency & Server Authority for Rewards**:
     *   Do not accept `restBonus` or reward amounts from the client. The client should only send a "TaskCompleted" signal (or better, the server tracks task completion independently).
     *   Implement strict idempotency keys for all reward claim endpoints to prevent Replay Attacks.
+8.  **Strict Parameter Checking**: In `LWChat_ModifyAnchorLinkPriceAo` handlers, verify that the user ID in the request matches the authenticated user (prevent IDOR) and that the price is within a valid, safe range (prevent overflow/underflow).
 
 ## Tools Provided
 *   `analyze_payment.py`: A Python script to replicate this analysis on future builds.
