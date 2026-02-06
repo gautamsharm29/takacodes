@@ -49,12 +49,15 @@ This section explains the *technical reason* why these bugs exist, helping devel
 
 ## Detailed Vulnerability Analysis
 
-### [Previously Identified Vulnerabilities Retained Here]
+### Validation Gap Analysis: Negative Value Injection
+*   **Target**: `LWChat_SendPayMessageBean` (specifically the `messageAmount` field).
+*   **Methodology**: Static analysis of the DEX bytecode strings surrounding the bean definition.
+*   **Findings**:
+    *   The string search for `LWChat_SendPayMessageBean` followed by control flow keywords (`if`, `throw`, `check`, `validate`) returned **Zero Matches** in the relevant context.
+    *   The only nearby matches were unrelated UI properties (SwitchButton colors).
+*   **Conclusion**: **Confirmed Logic Gap**. The client-side code contains **no logic to reject negative integers** for this field. This places the burden of security entirely on the server. If the server fails to check for `amount <= 0`, the vulnerability is exploitable.
 
-### New Finding: Rebate/Voucher Manipulation
-*   **Description**: Analysis found `setTotalRebate` and `voucherExpireTime` in the context of `LWChat_GiftChooseBean`.
-*   **The Flaw**: If the client is responsible for calculating the "Total Rebate" (e.g., applying a coupon locally) and sending the final discounted price to the server, an attacker can set `totalRebate` to 100% (free) or manipulate the expiration time to use expired vouchers.
-*   **Financial Threat**: Users obtain items at unauthorized discounts.
+### [Previously Identified Vulnerabilities Retained Here]
 
 ## Recommendations for Remediation
 
