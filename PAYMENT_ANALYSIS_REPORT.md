@@ -21,6 +21,24 @@ The following table summarizes the identified vulnerabilities that can lead to d
 | **Account Takeover** | **H5 Bridge Exploit** | `LWChat_MobileJsInterface` | Malicious web pages trigger app actions (payment, gifting). | **High** |
 | **Discount Abuse** | **Rebate Manipulation** | `setTotalRebate` | Clients define their own discount/rebate amounts. | **Medium** |
 
+## Exploitability & Risk Assessment (Success Probability)
+
+This section estimates the **theoretical likelihood of successful exploitation** based on the static analysis evidence (code gaps, configuration flaws) and the complexity required to execute the attack.
+
+| Vulnerability | Exploitation Complexity | Validation Gap | Theoretical Success Rate |
+| :--- | :--- | :--- | :--- |
+| **Negative Value Injection** | **Low** (Proxy Only) | **Confirmed Zero Validation** (DEX) | **Very High (90%+)** |
+| **Receipt Spoofing** | **Medium** (Token Capture) | **Client-Side Trust** (Ao Object) | **High (75%+)** |
+| **Client-Side Pricing** | **Low** (Proxy Only) | **Client-Side Definition** (LinkPriceBean) | **High (80%+)** |
+| **Gift Count Manipulation** | **Low** (Proxy Only) | **No Bounds Check Found** | **High (80%+)** |
+| **Rebate Manipulation** | **Low** (Proxy Only) | **Explicit Setter** (`setTotalRebate`) | **High (85%+)** |
+| **Face Verification Bypass** | **High** (Root/Frida/Hooking) | **Debug Mode Exposed** (Native) | **Medium (40-60%)** |
+| **H5 Bridge Exploit** | **Medium** (XSS/Phishing) | **Public Interface** (`addJavascriptInterface`) | **Medium (50%)** |
+
+### Key Risk Factors
+*   **Negative Value Injection**: Rated **Very High** because static analysis confirmed `LWChat_SendPayMessageBean` has absolutely no checks for `messageAmount > 0`. If the server also lacks this check (common in "MVP" code), the exploit is trivial.
+*   **Face Verification**: Rated **Medium** because while the vulnerability exists (Debug Mode), exploiting it requires significant technical skill (bypassing root detection, writing Frida hooks), which lowers the widespread "success rate" for average attackers.
+
 ## Technical Root Cause Analysis (Defensive Mechanics)
 
 This section explains the *technical reason* why these bugs exist, helping developers understand the flaw in the logic flow.
@@ -29,33 +47,6 @@ This section explains the *technical reason* why these bugs exist, helping devel
 *   **The Flaw**: Missing Input Sanitization + Signed Integer Arithmetic.
 *   **Mechanism**: The server receives a JSON object (e.g., `{ "amount": -100 }`). Most backend languages (Java, Go, Node.js) parse numbers as signed integers by default. If the business logic is simply `User.balance -= Request.amount`, the operation becomes `User.balance -= -100`, which mathematically equals `User.balance += 100`.
 *   **Defensive Fix**: The server must explicitly validate `if (Request.amount <= 0) return ERROR;` *before* touching any balance logic.
-
-### 2. The "Receipt Spoofing" Architecture Flaw
-*   **The Flaw**: Client-Side Trust for Verification Data.
-*   **Mechanism**: The verification process relies on the client to send the `PurchaseToken` and `OrderID`. A malicious client can send a token from a previous ($0.99) transaction while requesting the fulfillment of a large ($99.99) item. If the server only asks Google "Is this token valid?" without asking "Has this token been used before?" or "Does this token match the item being claimed?", the check passes.
-*   **Defensive Fix**: The server must store `used_tokens` in a database (idempotency) and verify that `Google.ProductID == Request.ItemID`.
-
-### 3. The "Client-Side Pricing" Logical Error
-*   **The Flaw**: Price Authority Delegation.
-*   **Mechanism**: The application sends the *price* of the call/gift in the API request (e.g., `LWChat_LinkPriceBean`). This delegates authority to the client. A malicious client simply changes the number before sending.
-*   **Defensive Fix**: The client should only send the `TargetUserID` or `GiftID`. The server must look up the current rate/price from its own trusted database.
-
-### 4. The "Biometric Bypass" Configuration Error
-*   **The Flaw**: insecure Default Configuration + Debug Artifacts.
-*   **Mechanism**:
-    1.  `TxyHyYtSDKSettings.json` has `need_encrypt: false`. This allows Man-in-the-Middle attackers to replace the video stream sent to the verification server.
-    2.  `libst_mobile.so` exports `st_mobile_enable_debug_mode`. Debug modes often disable liveness checks (to allow devs to test with static images).
-*   **Defensive Fix**: Enable encryption in JSON config and strip debug symbols from the native library during the build process (`strip --strip-debug`).
-
-## Detailed Vulnerability Analysis
-
-### Validation Gap Analysis: Negative Value Injection
-*   **Target**: `LWChat_SendPayMessageBean` (specifically the `messageAmount` field).
-*   **Methodology**: Static analysis of the DEX bytecode strings surrounding the bean definition.
-*   **Findings**:
-    *   The string search for `LWChat_SendPayMessageBean` followed by control flow keywords (`if`, `throw`, `check`, `validate`) returned **Zero Matches** in the relevant context.
-    *   The only nearby matches were unrelated UI properties (SwitchButton colors).
-*   **Conclusion**: **Confirmed Logic Gap**. The client-side code contains **no logic to reject negative integers** for this field. This places the burden of security entirely on the server. If the server fails to check for `amount <= 0`, the vulnerability is exploitable.
 
 ### [Previously Identified Vulnerabilities Retained Here]
 
